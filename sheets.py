@@ -70,7 +70,7 @@ def guess_category(text: str) -> str:
 def get_my_tasks(status_filter="pending", category=None, assignee=None) -> List[Dict]:
     try:
         ws = _get_sheet("My Tasks")
-        records = ws.get_all_records()
+        records = ws.get_all_records(head=2)
         tasks = [r for r in records if r.get("Task ID")]
         if status_filter == "pending":
             tasks = [r for r in tasks if str(r.get("Status", "")).lower() != "done"]
