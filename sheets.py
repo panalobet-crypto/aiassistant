@@ -144,3 +144,23 @@ def mark_done(task_id: str) -> bool:
     except Exception as e:
         logger.error(f"mark_done failed: {e}")
         return False
+
+def update_task(task_id: str, field: str, value: str) -> bool:
+    """更新任务某个字段"""
+    field_map = {
+        "title": 2, "category": 3, "assignee": 4,
+        "due": 5, "priority": 6, "notes": 9
+    }
+    try:
+        ws = _get_sheet("My Tasks")
+        cell = ws.find(task_id)
+        if not cell:
+            return False
+        col = field_map.get(field.lower())
+        if not col:
+            return False
+        ws.update_cell(cell.row, col, value)
+        return True
+    except Exception as e:
+        logger.error(f"update_task failed: {e}")
+        return False
