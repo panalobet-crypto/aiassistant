@@ -28,7 +28,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
 
 from config import TELEGRAM_BOT_TOKEN, MANAGER_CHAT_ID, DAILY_BRIEF_HOUR, TIMEZONE
-from sheets import (get_tasks, get_kpi_data, get_my_tasks, write_my_task, mark_done,
+from sheets import (get_my_tasks, write_my_task, mark_done,
                     get_tasks_due_today, get_tasks_this_week)
 from agent import ask_claude_personal
 
