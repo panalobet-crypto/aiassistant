@@ -32,6 +32,29 @@ CATEGORY_KEYWORDS = {
                  "生日", "birthday", "bank", "银行", "insurance", "私人"],
 }
 
+# column index map (1-based)
+COL = {
+    "task_id":  1,
+    "title":    2,
+    "category": 3,
+    "assignee": 4,
+    "due":      5,
+    "priority": 6,
+    "status":   7,
+    "created":  8,
+    "notes":    9,
+}
+
+FIELD_COL = {
+    "title":    COL["title"],
+    "category": COL["category"],
+    "assignee": COL["assignee"],
+    "due":      COL["due"],
+    "priority": COL["priority"],
+    "status":   COL["status"],
+    "notes":    COL["notes"],
+}
+
 
 def _get_client() -> gspread.Client:
     global _client
@@ -98,7 +121,7 @@ def get_tasks_due_today() -> List[Dict]:
 
 def get_tasks_this_week() -> List[Dict]:
     try:
-        today = date.today()
+        today    = date.today()
         week_end = today + timedelta(days=(6 - today.weekday()))
         return [t for t in get_my_tasks("all")
                 if str(t.get("Due Date", "")).strip() and
@@ -108,12 +131,21 @@ def get_tasks_this_week() -> List[Dict]:
         return []
 
 
+def get_tasks_by_date(target_date: str) -> List[Dict]:
+    try:
+        return [t for t in get_my_tasks("pending")
+                if str(t.get("Due Date", "")).strip() == target_date]
+    except Exception as e:
+        logger.error(f"get_tasks_by_date failed: {e}")
+        return []
+
+
 def write_my_task(task_data: Dict):
     try:
-        ws = _get_sheet("My Tasks")
+        ws       = _get_sheet("My Tasks")
         all_rows = ws.get_all_values()
         task_num = len([r for r in all_rows if r and str(r[0]).startswith("P")]) + 1
-        task_id = f"P{task_num:03d}"
+        task_id  = f"P{task_num:03d}"
         category = task_data.get("category") or guess_category(task_data.get("title", ""))
         row = [
             task_id,
@@ -135,29 +167,25 @@ def write_my_task(task_data: Dict):
 
 def mark_done(task_id: str) -> bool:
     try:
-        ws = _get_sheet("My Tasks")
+        ws   = _get_sheet("My Tasks")
         cell = ws.find(task_id)
         if cell:
-            ws.update_cell(cell.row, 7, "Done")
+            ws.update_cell(cell.row, COL["status"], "Done")
             return True
         return False
     except Exception as e:
         logger.error(f"mark_done failed: {e}")
         return False
 
+
 def update_task(task_id: str, field: str, value: str) -> bool:
-    """更新任务某个字段"""
-    field_map = {
-        "title": 2, "category": 3, "assignee": 4,
-        "due": 5, "priority": 6, "notes": 9
-    }
     try:
-        ws = _get_sheet("My Tasks")
+        ws  = _get_sheet("My Tasks")
+        col = FIELD_COL.get(field.lower())
+        if not col:
+            return False
         cell = ws.find(task_id)
         if not cell:
-            return False
-        col = field_map.get(field.lower())
-        if not col:
             return False
         ws.update_cell(cell.row, col, value)
         return True
