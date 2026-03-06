@@ -278,14 +278,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif f and f[0].isdigit():
                 tasks, title = get_tasks_by_date(f), f"{f} 的任务"
             else:
-                tasks, title = get_my_tasks("pending", assignee=f), f"{f} 的任务"
-            await update.message.reply_text(format_task_list(tasks, title), parse_mode="Markdown")
+                # 人名或其他 — 尝试 assignee 匹配
+                tasks = get_my_tasks("pending", assignee=f) if f != "all" else get_my_tasks("pending")
+                title = f"{f} 的任务" if f != "all" else "所有待办"
+
+            # 让 Claude 解读数据并回答
+            all_tasks = get_my_tasks("pending")
+            reply = ask_claude_personal(
+                f"今天是 {today}。用户问：\"{user_text}\"\n\n"
+                f"相关任务：\n{json.dumps(tasks, ensure_ascii=False, indent=2)}\n\n"
+                f"所有待办：\n{json.dumps(all_tasks, ensure_ascii=False, indent=2)}\n\n"
+                f"请直接回答用户问题，给出具体建议。"
+            )
+            await update.message.reply_text(reply, parse_mode="Markdown")
 
         elif t == "analyze":
             await cmd_analyze(update, context)
 
         else:
-            reply = data.get("reply") or "好的！"
+            # 普通对话 — 自动带入任务数据
+            all_tasks = get_my_tasks("pending")
+            if all_tasks:
+                reply = ask_claude_personal(
+                    f"今天是 {today}（{weekday_name}）。\n\n"
+                    f"用户的所有待办任务：\n{json.dumps(all_tasks, ensure_ascii=False, indent=2)}\n\n"
+                    f"用户说：\"{user_text}\"\n\n"
+                    f"根据以上任务数据，直接回答用户的问题或给出建议。"
+                )
+            else:
+                reply = data.get("reply") or "目前没有待办任务，直接告诉我新任务，我帮你记录！"
             await update.message.reply_text(reply, parse_mode="Markdown")
 
     except Exception as e:
