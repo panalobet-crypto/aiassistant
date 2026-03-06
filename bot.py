@@ -255,6 +255,34 @@ async def job_weekly_summary(app):
     except Exception as e:
         logger.error(f"weekly summary failed: {e}")
 
+async def cmd_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 用法: /edit P001 assignee Suman
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "用法：`/edit [ID] [字段] [新值]`\n\n"
+            "字段选项：\n"
+            "`title` · `assignee` · `due` · `priority` · `category` · `notes`\n\n"
+            "例子：\n"
+            "`/edit P001 assignee Suman`\n"
+            "`/edit P001 due 2026-03-15`\n"
+            "`/edit P001 priority HIGH`",
+            parse_mode="Markdown"
+        )
+        return
+    task_id = context.args[0].upper()
+    field = context.args[1].lower()
+    value = " ".join(context.args[2:])
+    from sheets import update_task
+    if update_task(task_id, field, value):
+        await update.message.reply_text(
+            f"✅ `{task_id}` 已更新\n*{field}* → `{value}`",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text(
+            f"⚠️ 更新失败，请确认任务 ID 和字段名正确。",
+            parse_mode="Markdown"
+        )
 
 # ─── MAIN ────────────────────────────────────────────────
 
@@ -272,6 +300,7 @@ def main():
     app.add_handler(CommandHandler("who", cmd_who))
     app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("edit", cmd_edit))
 
     tz = pytz.timezone(TIMEZONE)
     scheduler = AsyncIOScheduler(timezone=tz)
