@@ -95,14 +95,14 @@ async def ask_next_field(update, context, task_data: dict) -> bool:
         )
         return True
 
-    if not task_data.get("assignee") or task_data.get("assignee") == "Me":
+    if not task_data.get("assignee"):
         context.user_data[PENDING_TASK] = task_data
         context.user_data[PENDING_STEP] = "assignee"
         await update.message.reply_text(
             f"👤 *谁负责这个任务？（可多选，用逗号分隔）*\n\n"
             f"1️⃣ 我自己\n2️⃣ Suman\n3️⃣ Trisha\n4️⃣ Gopi\n5️⃣ Kanhana\n6️⃣ Jovan\n"
             f"7️⃣ 其他（直接输入名字）\n\n"
-            f"_例如：输入 `2,3` 表示 Suman 和 Trisha 一起负责_",
+            f"_例：输入 `2,3` = Suman 和 Trisha 一起负责_",
             parse_mode="Markdown"
         )
         return True
@@ -150,16 +150,15 @@ async def handle_pending_step(update, context, user_text: str) -> bool:
             return True
         task_data["category"] = cat
 
-     elif step == "assignee":
-            mapping = {"1":"Me","2":"Suman","3":"Trisha","4":"Gopi",
-                       "5":"Kanhana","6":"Jovan","我自己":"Me","自己":"Me"}
-            # 支持多选，如 "2,3" 或 "Suman, Trisha"
-            parts = [p.strip() for p in re.split(r'[,，、\s]+', t) if p.strip()]
-            names = []
-            for p in parts:
-                names.append(mapping.get(p, p))
-            task_data["assignee"] = ", ".join(names) if names else "Me"
-
+    elif step == "assignee":
+        mapping = {"1":"Me","2":"Suman","3":"Trisha","4":"Gopi",
+                   "5":"Kanhana","6":"Jovan","我自己":"Me","自己":"Me","me":"Me"}
+        parts = [p.strip() for p in re.split(r"[,，、]+", t) if p.strip()]
+        names = []
+        for p in parts:
+            resolved = mapping.get(p) or mapping.get(p.lower())
+            names.append(resolved if resolved else p)
+        task_data["assignee"] = ", ".join(names) if names else "Me"
 
     elif step == "due":
         today    = date.today()
