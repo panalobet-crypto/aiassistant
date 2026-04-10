@@ -221,9 +221,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/today · /all · /week · /analyze\n"
         "/seo · /social · /ops · /personal\n"
         "/who [名字] · /date [日期]\n"
-        "/done [ID] · /edit [ID] [字段] [新值]",
+        "/done [ID] · /edit [ID] [字段] [新值]\n"
+        "/sheet — 打开任务记录表",
         parse_mode="Markdown"
     )
+
+async def cmd_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from config import GOOGLE_SHEET_ID
+    await update.message.reply_text(
+        f"📊 *任务记录表*\n\n"
+        f"[点击打开 Google Sheet](https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID})",
+        parse_mode="Markdown"
+    )
+
 
 async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tasks = get_tasks_due_today()
@@ -511,6 +521,7 @@ def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start",    cmd_start))
+    app.add_handler(CommandHandler("sheet",    cmd_sheet))
     app.add_handler(CommandHandler("today",    cmd_today))
     app.add_handler(CommandHandler("all",      cmd_all))
     app.add_handler(CommandHandler("week",     cmd_week))
