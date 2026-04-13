@@ -62,12 +62,24 @@ def ask_claude_personal(prompt: str, memories: list = None) -> str:
     try:
         client = _get_client()
         system = build_system_prompt_with_memory(memories or [])
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=1000,
-            system=system,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        try:
+            response = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=1000,
+                system=system,
+                messages=[{"role": "user", "content": prompt}]
+            )
+        except anthropic.APIStatusError as e2:
+            if "529" in str(e2) or "overloaded" in str(e2).lower():
+                # 自动切换到 Haiku
+                response = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=1000,
+                    system=system,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+            else:
+                raise e2
         return response.content[0].text
     except anthropic.APIStatusError as e:
         if "credit" in str(e).lower():
