@@ -330,7 +330,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 加载记忆
     memories = get_memories()
+# 记住指令 — 最先检测
+    if user_text.strip().startswith("记住") or user_text.strip().startswith("记得"):
+        content = user_text.strip()
+        for prefix in ["记住，", "记住,", "记住", "记得，", "记得,", "记得"]:
+            if content.startswith(prefix):
+                content = content[len(prefix):].strip()
+                break
+        write_memory("user", content)
+        await update.message.reply_text(f"🧠 *已记住：*\n_{content}_", parse_mode="Markdown")
+        return
 
+    # 忘记指令
+    if user_text.strip().startswith("忘记"):
+        keyword = user_text.strip()[2:].strip().lstrip("，").lstrip(",").strip()
+        if delete_memory(keyword):
+            await update.message.reply_text(f"🗑️ 已删除包含 _{keyword}_ 的记忆", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("⚠️ 找不到相关记忆", parse_mode="Markdown")
+        return
     # 快速记录模式
     if context.user_data.get(QUICK_MODE):
         context.user_data[QUICK_MODE] = False
