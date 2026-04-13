@@ -1,16 +1,17 @@
 """
-agent.py — Claude API for Personal Task Assistant v6
-带记忆 + Haiku 自动备用
+agent.py — Claude API + OpenAI GPT-4o-mini 备用
+Sonnet 过载时自动切换到 GPT-4o-mini
 """
 
 import logging
 import anthropic
-from config import CLAUDE_API_KEY, CLAUDE_MODEL
+from config import CLAUDE_API_KEY, CLAUDE_MODEL, OPENAI_API_KEY
 
 logger = logging.getLogger(__name__)
-_client = None
+_claude_client = None
+_openai_client = None
 
-FALLBACK_MODEL = "claude-haiku-4-5-20251001"
+FALLBACK_MODEL = "gpt-4o-mini"
 
 BASE_SYSTEM_PROMPT = """你是 HY Kee 的私人任务助理。
 
@@ -33,11 +34,19 @@ BASE_SYSTEM_PROMPT = """你是 HY Kee 的私人任务助理。
 """
 
 
-def _get_client():
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-    return _client
+def _get_claude_client():
+    global _claude_client
+    if _claude_client is None:
+        _claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+    return _claude_client
+
+
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        import openai
+        _openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+    return _openai_client
 
 
 def build_system_prompt_with_memory(memories: list) -> str:
@@ -56,10 +65,10 @@ def build_system_prompt_with_memory(memories: list) -> str:
     return BASE_SYSTEM_PROMPT + "\n【你对这个用户的了解】\n" + "\n".join(mem_lines)
 
 
-def _call_api(model: str, system: str, prompt: str) -> str:
-    client = _get_client()
+def _call_claude(system: str, prompt: str) -> str:
+    client = _get_claude_client()
     response = client.messages.create(
-        model=model,
+        model=CLAUDE_MODEL,
         max_tokens=1000,
         system=system,
         messages=[{"role": "user", "content": prompt}]
@@ -67,22 +76,35 @@ def _call_api(model: str, system: str, prompt: str) -> str:
     return response.content[0].text
 
 
+def _call_openai(system: str, prompt: str) -> str:
+    client = _get_openai_client()
+    response = client.chat.completions.create(
+        model=FALLBACK_MODEL,
+        max_tokens=1000,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt}
+        ]
+    )
+    return response.choices[0].message.content
+
+
 def ask_claude_personal(prompt: str, memories: list = None) -> str:
     system = build_system_prompt_with_memory(memories or [])
 
-    # 先试 Sonnet，过载就切 Haiku
+    # 先试 Claude Sonnet
     try:
-        return _call_api(CLAUDE_MODEL, system, prompt)
+        return _call_claude(system, prompt)
     except anthropic.APIStatusError as e:
         if "529" in str(e) or "overloaded" in str(e).lower():
-            logger.warning("Sonnet overloaded, switching to Haiku")
+            logger.warning("Claude overloaded, switching to OpenAI GPT-4o-mini")
             try:
-                return _call_api(FALLBACK_MODEL, system, prompt)
-            except anthropic.APIStatusError as e2:
-                if "credit" in str(e2).lower():
-                    return "⚠️ Claude API 余额不足，请前往 console.anthropic.com 充值。"
-                logger.error(f"Haiku also failed: {e2}")
-                return "⚠️ Claude 服务器暂时过载，请1-2分钟后重试。"
+                result = _call_openai(system, prompt)
+                logger.info("OpenAI fallback succeeded")
+                return result
+            except Exception as e2:
+                logger.error(f"OpenAI fallback failed: {e2}")
+                return "⚠️ Claude 和 OpenAI 都暂时无法回复，请稍后再试。"
         if "credit" in str(e).lower():
             return "⚠️ Claude API 余额不足，请前往 console.anthropic.com 充值。"
         logger.error(f"Claude API error: {e}")
