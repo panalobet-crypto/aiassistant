@@ -486,22 +486,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply = data.get("reply") or "目前没有待办任务，直接告诉我新任务，我帮你记录！"
             await update.message.reply_text(reply, parse_mode="Markdown")
 
-      except Exception as e:
-              logger.error(f"handle_message error: {e}, raw: {raw}")
-              # 尝试直接当任务记录
-              task_data = {
-                  "title": user_text[:50],
-                  "category": None,
-                  "assignee": None,
-                  "due": None,
-                  "priority": None,
-                  "notes": ""
-              }
-              still_missing = await ask_next_field(update, context, task_data)
-              if not still_missing:
-                  task_id = write_my_task(task_data)
-                  if task_id:
-                      await update.message.reply_text(f"✅ *已记录* `{task_id}`\n\n{user_text[:50]}", parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"handle_message error: {e}, raw: {raw}")
+        await update.message.reply_text("⚠️ 没听清楚，再说一次？", parse_mode="Markdown")
 
 
 
