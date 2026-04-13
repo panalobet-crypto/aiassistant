@@ -218,11 +218,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💬 _'周五前完成 IPL SEO 规划，高优先级，委派给Suman'_\n"
         "💬 _'下周一有什么任务？'_\n\n"
         "*指令：*\n"
-        "/today · /all · /week · /analyze\n"
+        "/today · /all · /week · /analyze · /stats\n"
         "/seo · /social · /ops · /personal\n"
         "/who [名字] · /date [日期]\n"
         "/done [ID] · /edit [ID] [字段] [新值]\n"
-        "/sheet — 打开任务记录表",
+        "/sheet — 打开任务记录表\n"
+        "/q — 快速记录（跳过选项用默认值）",
         parse_mode="Markdown"
     )
 
@@ -324,6 +325,44 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     if not user_text:
+        return
+
+    # 快速记录模式
+    if context.user_data.get(QUICK_MODE):
+        context.user_data[QUICK_MODE] = False
+        task_data = {"title": user_text, "category": "Ops", "assignee": "Me", "due": None, "priority": "MED", "notes": "快速记录"}
+        task_id = write_my_task(task_data)
+        if task_id:
+            await update.message.reply_text(f"⚡ *快速记录* `{task_id}`\n\n⚙️ [Ops] {user_text}\n👤 我自己 · 🟡 MED", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("⚠️ 记录失败，请重试。")
+        return
+
+    # 转发消息处理
+    if update.message.forward_date or update.message.forward_from or update.message.forward_from_chat:
+        tasks_found = []
+        try:
+            import json as _json, re as _re
+            prompt = f"今天是 {date.today()}。以下是一条转发的消息：\n\n\"{user_text}\"\n\n请判断里面有没有需要跟进的任务。如果有，返回JSON数组：[{{\"title\":\"标题\",\"category\":null,\"assignee\":null,\"due\":null,\"priority\":null,\"notes\":\"转发自消息\"}}]。没有任务返回：[]。只返回JSON。"
+            raw = ask_claude_personal(prompt)
+            clean = _re.sub(r'```json|```', '', raw).strip()
+            tasks_found = _json.loads(clean)
+        except:
+            tasks_found = []
+
+        if tasks_found:
+            results = []
+            for td in tasks_found:
+                tid = write_my_task(td)
+                if tid:
+                    results.append(f"`{tid}` {td.get('title','')}")
+            if results:
+                await update.message.reply_text(
+                    f"📨 *从转发消息提取了 {len(results)} 个任务：*\n\n" + "\n".join(results),
+                    parse_mode="Markdown"
+                )
+                return
+        await update.message.reply_text("✅ 转发消息里没有发现需要跟进的任务。")
         return
 
     # 先处理待完成的对话步骤
@@ -432,6 +471,126 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ 没听清楚，再说一次？", parse_mode="Markdown")
 
 
+
+
+# ─── 语音转任务 ──────────────────────────────────────────
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """接收语音消息，用 Whisper 转文字，再提取任务"""
+    import tempfile, os
+    from config import OPENAI_API_KEY
+
+    await update.message.reply_text("🎙️ 正在识别语音...", parse_mode="Markdown")
+
+    try:
+        # 下载语音文件
+        voice = update.message.voice
+        file  = await context.bot.get_file(voice.file_id)
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            await file.download_to_drive(tmp.name)
+            tmp_path = tmp.name
+
+        # Whisper 转文字
+        import openai
+        openai.api_key = OPENAI_API_KEY
+        with open(tmp_path, "rb") as audio_file:
+            transcript = openai.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="zh"
+            )
+        os.unlink(tmp_path)
+        text = transcript.text.strip()
+
+        if not text:
+            await update.message.reply_text("⚠️ 无法识别语音内容，请重试。")
+            return
+
+        await update.message.reply_text(f"📝 识别结果：_{text}_", parse_mode="Markdown")
+
+        # 当作普通文字消息处理（提取任务）
+        update.message.text = text
+        await handle_message(update, context)
+
+    except Exception as e:
+        logger.error(f"voice handler error: {e}")
+        await update.message.reply_text("⚠️ 语音识别失败，请重试或直接打字。")
+
+# ─── 快速记录模式 /q ─────────────────────────────────────
+QUICK_MODE = "quick_mode"
+
+async def cmd_q(update, context):
+    context.user_data[QUICK_MODE] = True
+    await update.message.reply_text(
+        "⚡ *快速记录模式*\n\n直接输入任务标题，其他用默认值：\n"
+        "分类=Ops · 负责人=我自己 · 无截止日期 · 优先级=MED",
+        parse_mode="Markdown"
+    )
+
+
+# ─── 任务统计 /stats ─────────────────────────────────────
+async def cmd_stats(update, context):
+    all_tasks    = get_my_tasks("all")
+    pending      = [t for t in all_tasks if str(t.get("Status","")).lower() != "done"]
+    done_tasks   = [t for t in all_tasks if str(t.get("Status","")).lower() == "done"]
+    overdue      = [t for t in pending if str(t.get("Due Date","")).strip() and
+                    str(t.get("Due Date","")).strip() < date.today().isoformat()]
+    cat_count    = Counter(str(t.get("Category","Ops")) for t in pending)
+    person_count = Counter()
+    for t in pending:
+        for name in str(t.get("Assignee","Me")).split(","):
+            person_count[name.strip()] += 1
+    prio_count   = Counter(str(t.get("Priority","MED")) for t in pending)
+    total        = len(all_tasks)
+    rate         = f"{len(done_tasks)/total*100:.0f}%" if total > 0 else "N/A"
+
+    lines = [f"📊 *任务统计* — {date.today()}\n",
+             f"✅ 已完成：{len(done_tasks)} 项",
+             f"⏳ 待办：{len(pending)} 项",
+             f"🚨 逾期：{len(overdue)} 项\n",
+             "*按分类：*"]
+    for cat, n in cat_count.most_common():
+        lines.append(f"  {CAT_ICONS.get(cat,'📌')} {cat}：{n} 项")
+    lines.append("\n*按负责人：*")
+    for name, n in person_count.most_common():
+        lines.append(f"  👤 {name}：{n} 项")
+    lines.append("\n*按优先级：*")
+    lines.append(f"  🔴 HIGH：{prio_count.get('HIGH',0)} 项")
+    lines.append(f"  🟡 MED：{prio_count.get('MED',0)} 项")
+    lines.append(f"  🟢 LOW：{prio_count.get('LOW',0)} 项")
+    lines.append(f"\n📈 总体完成率：{rate}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ─── 委派跟进定时任务 ────────────────────────────────────
+async def job_delegation_followup(app):
+    try:
+        all_pending = get_my_tasks("pending")
+        followup = []
+        for t in all_pending:
+            assignee = str(t.get("Assignee","Me")).strip()
+            if assignee in ("Me", ""):
+                continue
+            created = str(t.get("Created","")).strip()
+            if not created:
+                continue
+            try:
+                created_date = date.fromisoformat(created)
+                days_old = (date.today() - created_date).days
+                if days_old >= 3:
+                    followup.append((t, days_old))
+            except:
+                continue
+        if not followup:
+            return
+        lines = ["👀 *委派跟进提醒*\n以下任务委派超过3天，请确认进度：\n"]
+        for t, days in followup:
+            lines.append(f"• `{t['Task ID']}` {t['Title']}\n  👤 {t['Assignee']} · 已委派 {days} 天")
+        lines.append("\n`/done [ID]` 标记完成  ·  `/edit [ID] due [日期]` 延期")
+        await app.bot.send_message(chat_id=MANAGER_CHAT_ID, text="\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"delegation followup failed: {e}")
+
+
 # ─── SCHEDULED JOBS ─────────────────────────────────────
 
 async def job_daily_brief(app):
@@ -534,6 +693,9 @@ def main():
     app.add_handler(CommandHandler("done",     cmd_done))
     app.add_handler(CommandHandler("edit",     cmd_edit))
     app.add_handler(CommandHandler("analyze",  cmd_analyze))
+    app.add_handler(CommandHandler("stats",    cmd_stats))
+    app.add_handler(CommandHandler("q",        cmd_q))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     tz = pytz.timezone(TIMEZONE)
@@ -546,9 +708,11 @@ def main():
                       "cron", hour=18, minute=0)
     scheduler.add_job(lambda: asyncio.ensure_future(job_weekly_summary(app)),
                       "cron", day_of_week="mon", hour=DAILY_BRIEF_HOUR, minute=0)
+    scheduler.add_job(lambda: asyncio.ensure_future(job_delegation_followup(app)),
+                      "cron", hour=14, minute=0)
     scheduler.start()
 
-    logger.info("个人任务助理 Bot v4 启动...")
+    logger.info("个人任务助理 Bot v6 启动...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
