@@ -20,8 +20,9 @@ import pytz
 
 from config import TELEGRAM_BOT_TOKEN, MANAGER_CHAT_ID, DAILY_BRIEF_HOUR, TIMEZONE
 from sheets import (get_my_tasks, write_my_task, mark_done, update_task,
-                    get_tasks_due_today, get_tasks_this_week, get_tasks_by_date)
-from agent import ask_claude_personal
+                    get_tasks_due_today, get_tasks_this_week, get_tasks_by_date,
+                    get_memories, write_memory, delete_memory, auto_update_memories)
+from agent import ask_claude_personal, analyze_task_conflicts
 
 logging.basicConfig(format="%(asctime)s — %(name)s — %(levelname)s — %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -223,7 +224,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/who [名字] · /date [日期]\n"
         "/done [ID] · /edit [ID] [字段] [新值]\n"
         "/sheet — 打开任务记录表\n"
-        "/q — 快速记录（跳过选项用默认值）",
+        "/q — 快速记录 · /memory — 查看记忆库",
         parse_mode="Markdown"
     )
 
@@ -327,6 +328,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_text:
         return
 
+    # 加载记忆
+    memories = get_memories()
+
     # 快速记录模式
     if context.user_data.get(QUICK_MODE):
         context.user_data[QUICK_MODE] = False
@@ -404,7 +408,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 优先级：紧急/今天/马上=HIGH, 一般=MED, 不急=LOW
 委派：'委派给X'/'交给X'/'让X做' → assignee=X"""
 
-    raw = ask_claude_personal(extract_prompt)
+    raw = ask_claude_personal(extract_prompt, memories)
 
     try:
         clean = re.sub(r'```json|```', '', raw).strip()
@@ -454,13 +458,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await cmd_analyze(update, context)
 
         else:
+            # 检测"记住"指令
+            if any(kw in user_text for kw in ["记住", "记得", "remember"]):
+                write_memory("user", user_text.replace("记住","").replace("记得","").replace("remember","").strip())
+                await update.message.reply_text(f"✅ 已记住：_{user_text}_", parse_mode="Markdown")
+                return
+
+            # 检测"忘记"指令
+            if any(kw in user_text for kw in ["忘记", "删除记忆", "forget"]):
+                keyword = user_text.replace("忘记","").replace("删除记忆","").replace("forget","").strip()
+                if delete_memory(keyword):
+                    await update.message.reply_text(f"🗑️ 已删除包含 _{keyword}_ 的记忆", parse_mode="Markdown")
+                else:
+                    await update.message.reply_text("⚠️ 找不到相关记忆", parse_mode="Markdown")
+                return
+
             all_tasks = get_my_tasks("pending")
             if all_tasks:
                 reply = ask_claude_personal(
                     f"今天是 {today}（{weekday_name}）。\n\n"
                     f"用户的所有待办任务：\n{json.dumps(all_tasks, ensure_ascii=False, indent=2)}\n\n"
                     f"用户说：\"{user_text}\"\n\n"
-                    f"根据任务数据，直接回答用户的问题或给出建议。"
+                    f"根据任务数据和你对用户的了解，直接回答用户的问题或给出建议。",
+                    memories
                 )
             else:
                 reply = data.get("reply") or "目前没有待办任务，直接告诉我新任务，我帮你记录！"
@@ -514,6 +534,28 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"voice handler error: {e}")
         await update.message.reply_text("⚠️ 语音识别失败，请重试或直接打字。")
+
+
+async def cmd_memory(update, context):
+    """查看和管理记忆"""
+    memories = get_memories()
+    if not memories:
+        await update.message.reply_text(
+            "🧠 *记忆库是空的*\n\n"
+            "Bot 会在你使用过程中自动学习你的习惯。\n"
+            "你也可以直接告诉我：_'记住，周五不要排太多任务'_",
+            parse_mode="Markdown"
+        )
+        return
+
+    type_icons = {"habit":"📌","pattern":"📊","insight":"💡","user":"✏️"}
+    lines = [f"🧠 *记忆库* ({len(memories)} 条)\n"]
+    for m in memories[-15:]:
+        icon = type_icons.get(str(m.get("Type","")), "📝")
+        lines.append(f"{icon} {m.get('Content','')}\n   _更新：{m.get('Updated','')}_")
+    lines.append("\n输入 `忘记 [关键词]` 删除某条记忆")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
 
 # ─── 快速记录模式 /q ─────────────────────────────────────
 QUICK_MODE = "quick_mode"
@@ -670,8 +712,54 @@ async def job_weekly_summary(app):
             for t in week_tasks[:5]:
                 lines.append(f"  • `{t['Task ID']}` {t['Title']} ({t.get('Due Date','')})")
         await app.bot.send_message(chat_id=MANAGER_CHAT_ID, text="\n".join(lines), parse_mode="Markdown")
+
+        # 自动更新记忆
+        new_mems = auto_update_memories()
+        if new_mems:
+            mem_lines = ["\n🧠 *记忆库已更新：*"]
+            for m in new_mems[:5]:
+                mem_lines.append(f"  • {m}")
+            await app.bot.send_message(chat_id=MANAGER_CHAT_ID, text="\n".join(mem_lines), parse_mode="Markdown")
     except Exception as e:
         logger.error(f"weekly summary failed: {e}")
+
+
+async def job_nightly_review(app):
+    """晚上10PM 每日复盘"""
+    try:
+        all_tasks   = get_my_tasks("all")
+        done_today  = [t for t in all_tasks
+                       if str(t.get("Status","")).lower() == "done"
+                       and str(t.get("Created","")).strip() == date.today().isoformat()]
+        pending     = [t for t in all_tasks if str(t.get("Status","")).lower() != "done"]
+        tomorrow    = (date.today() + timedelta(days=1)).isoformat()
+        tmr_tasks   = [t for t in pending if str(t.get("Due Date","")).strip() == tomorrow]
+        forgotten   = [t for t in pending
+                       if str(t.get("Created","")).strip() and
+                       (date.today() - date.fromisoformat(str(t.get("Created","")))).days >= 7
+                       if str(t.get("Created","")).strip()]
+
+        memories  = get_memories()
+        review    = ask_claude_personal(
+            f"今天是 {date.today()}。\n\n"
+            f"今天完成的任务：{json.dumps(done_today, ensure_ascii=False)}\n"
+            f"明天到期的任务：{json.dumps(tmr_tasks, ensure_ascii=False)}\n"
+            f"超过7天未处理的任务：{json.dumps(forgotten[:3], ensure_ascii=False)}\n"
+            f"所有待办：{len(pending)} 项\n\n"
+            f"请生成简短的每日复盘（3段）：\n"
+            f"1) 今天完成了什么（如果没有就说没有记录到完成的任务）\n"
+            f"2) 明天最重要的3件事\n"
+            f"3) 有没有被遗忘的任务需要处理\n"
+            f"简洁，不超过150字。",
+            memories
+        )
+        await app.bot.send_message(
+            chat_id=MANAGER_CHAT_ID,
+            text=f"🌙 *每日复盘* — {date.today()}\n\n{review}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"nightly review failed: {e}")
 
 
 # ─── MAIN ────────────────────────────────────────────────
@@ -695,6 +783,7 @@ def main():
     app.add_handler(CommandHandler("analyze",  cmd_analyze))
     app.add_handler(CommandHandler("stats",    cmd_stats))
     app.add_handler(CommandHandler("q",        cmd_q))
+    app.add_handler(CommandHandler("memory",   cmd_memory))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
@@ -710,6 +799,8 @@ def main():
                       "cron", day_of_week="mon", hour=DAILY_BRIEF_HOUR, minute=0)
     scheduler.add_job(lambda: asyncio.ensure_future(job_delegation_followup(app)),
                       "cron", hour=14, minute=0)
+    scheduler.add_job(lambda: asyncio.ensure_future(job_nightly_review(app)),
+                      "cron", hour=22, minute=0)
     scheduler.start()
 
     logger.info("个人任务助理 Bot v6 启动...")

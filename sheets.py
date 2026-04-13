@@ -192,3 +192,118 @@ def update_task(task_id: str, field: str, value: str) -> bool:
     except Exception as e:
         logger.error(f"update_task failed: {e}")
         return False
+
+
+# ─── MEMORY SHEET ────────────────────────────────────────
+
+def get_memories() -> List[Dict]:
+    """读取所有记忆"""
+    try:
+        ws = _get_sheet("Memory")
+        records = ws.get_all_records()
+        return [r for r in records if r.get("Content")]
+    except Exception as e:
+        logger.error(f"get_memories failed: {e}")
+        return []
+
+
+def write_memory(mem_type: str, content: str) -> bool:
+    """写入新记忆（去重：相同 content 不重复写）"""
+    try:
+        ws = _get_sheet("Memory")
+        # 确保 header 存在
+        all_rows = ws.get_all_values()
+        if not all_rows or all_rows[0] != ["Type", "Content", "Updated"]:
+            if not all_rows:
+                ws.append_row(["Type", "Content", "Updated"])
+
+        # 检查是否已存在相同内容
+        records = ws.get_all_records()
+        for i, r in enumerate(records):
+            if str(r.get("Content","")).strip().lower() == content.strip().lower():
+                # 更新时间
+                ws.update_cell(i + 2, 3, date.today().isoformat())
+                return True
+
+        ws.append_row([mem_type, content, date.today().isoformat()])
+        return True
+    except Exception as e:
+        logger.error(f"write_memory failed: {e}")
+        return False
+
+
+def delete_memory(content_keyword: str) -> bool:
+    """删除包含关键词的记忆"""
+    try:
+        ws = _get_sheet("Memory")
+        records = ws.get_all_records()
+        for i, r in enumerate(records):
+            if content_keyword.lower() in str(r.get("Content","")).lower():
+                ws.delete_rows(i + 2)
+                return True
+        return False
+    except Exception as e:
+        logger.error(f"delete_memory failed: {e}")
+        return False
+
+
+def auto_update_memories() -> List[str]:
+    """分析任务数据，自动更新记忆表。返回新增的记忆列表。"""
+    try:
+        from collections import Counter, defaultdict
+        all_tasks = get_my_tasks("all")
+        pending   = [t for t in all_tasks if str(t.get("Status","")).lower() != "done"]
+        done      = [t for t in all_tasks if str(t.get("Status","")).lower() == "done"]
+        new_memories = []
+
+        # 1. 委派习惯：谁经常负责哪个分类
+        cat_person = defaultdict(Counter)
+        for t in all_tasks:
+            cat = str(t.get("Category",""))
+            for name in str(t.get("Assignee","Me")).split(","):
+                name = name.strip()
+                if name and name != "Me":
+                    cat_person[cat][name] += 1
+
+        for cat, counter in cat_person.items():
+            top_name, top_count = counter.most_common(1)[0]
+            if top_count >= 3:
+                mem = f"用户习惯把 {cat} 任务委派给 {top_name}（已出现{top_count}次）"
+                write_memory("habit", mem)
+                new_memories.append(mem)
+
+        # 2. 负载检测：谁的任务最多
+        person_load = Counter()
+        for t in pending:
+            for name in str(t.get("Assignee","Me")).split(","):
+                name = name.strip()
+                if name:
+                    person_load[name] += 1
+
+        for name, count in person_load.items():
+            if count >= 4:
+                mem = f"{name} 当前待办任务较多（{count}项），分配新任务时需注意"
+                write_memory("pattern", mem)
+                new_memories.append(mem)
+
+        # 3. 完成率分析
+        total = len(all_tasks)
+        if total >= 5:
+            rate = len(done) / total * 100
+            if rate < 50:
+                mem = f"任务完成率偏低（{rate:.0f}%），建议减少新任务，先清理积压"
+                write_memory("insight", mem)
+                new_memories.append(mem)
+
+        # 4. 高频分类
+        cat_count = Counter(str(t.get("Category","")) for t in all_tasks)
+        top_cat   = cat_count.most_common(1)
+        if top_cat:
+            mem = f"最常见任务分类是 {top_cat[0][0]}（占 {top_cat[0][1]} 项）"
+            write_memory("pattern", mem)
+            new_memories.append(mem)
+
+        return new_memories
+    except Exception as e:
+        logger.error(f"auto_update_memories failed: {e}")
+        return []
